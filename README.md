@@ -4,7 +4,7 @@
 <br><br>
 <h3><code>mano@github ~ $ whoami</code></h3>
 <table><tr>
-<td valign="top"><img src="./avi-ascii.svg" width="370" alt="Animated ASCII portrait of Mano" /></td>
+<td valign="top"><img src="./mano.svg" width="370" alt="Animated ASCII portrait of Mano" /></td>
 <td valign="top"><img src="./info-card.svg" width="490" alt="Fullstack Developer and AI Builder. HTML, CSS, JavaScript, Python, PHP, Node.js, SQL and OpenAI API." /></td>
 </tr></table>
 <br>
