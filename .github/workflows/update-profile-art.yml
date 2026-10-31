@@ -1,0 +1,108 @@
+name: Refresh profile calendar
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: profile-calendar
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate contribution calendar
+        run: |
+          python - <<'PY'
+          """Generate a self-contained public contribution calendar using only Python stdlib."""
+          import datetime as dt
+          import html
+          import json
+          import os
+          import re
+          import urllib.request
+          from html.parser import HTMLParser
+          from pathlib import Path
+          
+          ROOT = Path.cwd()
+          (ROOT/'data').mkdir(exist_ok=True)
+          USER = 'Mano090'
+          PALETTE = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']
+          
+          class CalendarParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.days = {}
+              def handle_starttag(self, tag, attrs):
+                  a = dict(attrs)
+                  if a.get('data-date') and 'data-level' in a:
+                      self.days[a['data-date']] = {'date': a['data-date'], 'level': max(0, min(4, int(a['data-level']))), 'id': a.get('id', '')}
+          
+          def render(days, total=None):
+              today = dt.datetime.now(dt.timezone.utc).date()
+              start = today - dt.timedelta(days=364)
+              start -= dt.timedelta(days=(start.weekday()+1)%7)
+              width = ((today-start).days//7+1)*15+54
+              parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="190" viewBox="0 0 {width} 190">', f'<rect width="{width}" height="190" rx="14" fill="#0d1117"/>', '<g font-family="monospace" font-size="11" fill="#8b949e">']
+              for day, y in [('Mon', 57), ('Wed', 87), ('Fri', 117)]:
+                  parts.append(f'<text x="8" y="{y}">{day}</text>')
+              last_month = None
+              for offset in range((today-start).days+1):
+                  date = start + dt.timedelta(days=offset)
+                  col, row = divmod(offset, 7)
+                  x, y = 42+col*15, 27+row*15
+                  if row == 0 and date.month != last_month:
+                      parts.append(f'<text x="{x}" y="17">{date:%b}</text>')
+                      last_month = date.month
+                  item = days.get(date.isoformat(), {})
+                  color = PALETTE[item.get('level', 0)]
+                  label = html.escape(f'{date}: ' + (str(item['count'])+' contributions' if 'count' in item else ('activity level '+str(item['level']) if item else 'data unavailable')))
+                  parts.append(f'<rect x="{x}" y="{y}" width="11" height="11" rx="2" fill="{color}" opacity="0"><title>{label}</title><animate attributeName="opacity" from="0" to="1" begin="{(col+row)*.025:.3f}s" dur=".2s" fill="freeze"/></rect>')
+              footer = f'{total:,} contributions in the displayed calendar' if total is not None else ('Public contribution activity · '+USER if days else 'Calendar loads after the first GitHub Actions run')
+              parts.append(f'<text x="18" y="163">{html.escape(footer)}</text>')
+              x = width-155
+              parts.append(f'<text x="{x}" y="163">Less</text>')
+              for i, color in enumerate(PALETTE):
+                  parts.append(f'<rect x="{x+32+i*14}" y="153" width="10" height="10" rx="2" fill="{color}"/>')
+              parts.append(f'<text x="{width-42}" y="163">More</text></g></svg>')
+              (ROOT/'contrib-heatmap.svg').write_text(''.join(parts), encoding='utf-8')
+          
+          if __name__ == '__main__':
+              if os.environ.get('PROFILE_PLACEHOLDER') == '1':
+                  render({})
+              else:
+                  request = urllib.request.Request(f'https://github.com/users/{USER}/contributions', headers={'User-Agent': 'Mano090-profile-calendar', 'Accept': 'text/html'})
+                  with urllib.request.urlopen(request, timeout=45) as response:
+                      page = response.read().decode('utf-8')
+                  parser = CalendarParser()
+                  parser.feed(page)
+                  if len(parser.days) < 300:
+                      raise RuntimeError('Unexpected GitHub response; preserving existing calendar')
+                  for cell_id, body in re.findall(r'<tool-tip\b[^>]*for="([^"]+)"[^>]*>(.*?)</tool-tip>', page, flags=re.S):
+                      text = html.unescape(re.sub('<[^>]+>', '', body)).strip()
+                      match = re.search(r'([\d,]+) contribution', text)
+                      count = int(match.group(1).replace(',', '')) if match else (0 if text.startswith('No contributions') else None)
+                      for day in parser.days.values():
+                          if day['id'] == cell_id and count is not None:
+                              day['count'] = count
+                  days = list(parser.days.values())
+                  total = sum(d['count'] for d in days) if all('count' in d for d in days) else None
+                  (ROOT/'data'/'contributions.json').write_text(json.dumps({'username': USER, 'updated': dt.datetime.now(dt.timezone.utc).isoformat(), 'days': days}, indent=2), encoding='utf-8')
+                  render(parser.days, total)
+          PY
+      - name: Commit refreshed calendar
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/contributions.json contrib-heatmap.svg
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: refresh contribution calendar [skip ci]'
+            git push
+          fi
